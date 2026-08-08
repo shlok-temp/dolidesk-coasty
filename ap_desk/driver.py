@@ -98,6 +98,8 @@ class Step:
     note: str = ""
     performed: bool = False
     credits: int = 0
+    # True when the session had to be reopened before this step could run.
+    recovered: bool = False
     # The unparsed response. A run that ends in `fail` is almost impossible to
     # diagnose without it: the console shows a truncated reasoning string and
     # nothing about why the model produced no action.
@@ -251,23 +253,40 @@ class LocalDriver:
             return "stop file removed by operator"
         return None
 
-    def run(self, instruction: str, *, session_kwargs: dict | None = None) -> DriverResult:
-        """Drive until the model says done, the cap is hit, or the operator stops."""
-        result = DriverResult()
-
-        _, size = self.capture()
+    def _new_session(self, size: tuple[int, int], session_kwargs: dict | None) -> tuple[str | None, int]:
+        """Open a session and return (id, credits charged)."""
         created = self.client.create_session(
             **{"screen_width": size[0], "screen_height": size[1], **(session_kwargs or {})}
         )
         # The documented field is `session_id`; `id` is accepted as a fallback
         # so a future rename does not hard-fail the loop.
-        session_id = created.get("session_id") or created.get("id")
-        result.session_id = session_id
-        result.credits += int((created.get("usage") or {}).get("credits_charged") or 0)
+        sid = created.get("session_id") or created.get("id")
+        return sid, int((created.get("usage") or {}).get("credits_charged") or 0)
 
+    def run(self, instruction: str, *, session_kwargs: dict | None = None) -> DriverResult:
+        """Drive until the model says done, the cap is hit, or the operator stops."""
+        from ap_desk.coasty import CoastyError
+
+        result = DriverResult()
+        _, size = self.capture()
+
+        session_id, credits = self._new_session(size, session_kwargs)
+        result.session_id = session_id
+        result.credits += credits
         if not session_id:
             result.reason = "session create returned no session_id"
             return result
+
+        # A session can disappear mid-run. Observed live: created fine, served
+        # two steps, then SESSION_NOT_FOUND with zero sessions on the account.
+        # Losing a 60-step run to that is not acceptable, so a lost session is
+        # replaced and the step retried. The trajectory context is gone, but
+        # the agent re-reads the screen every turn anyway, so it recovers.
+        #
+        # Bounded, because an unbounded retry against a genuinely broken
+        # account would spend the whole budget re-creating sessions.
+        max_recoveries = 3
+        recoveries = 0
 
         try:
             for index in range(self.max_steps):
@@ -283,13 +302,40 @@ class LocalDriver:
                     sha256=hashlib.sha256(png).hexdigest(),
                     taken_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 )
+                shot = base64.b64encode(png).decode("ascii")
 
-                raw = self.client.session_predict(
-                    session_id,
-                    screenshot=base64.b64encode(png).decode("ascii"),
-                    instruction=instruction,
-                    include_reasoning=self.include_reasoning,
-                )
+                try:
+                    raw = self.client.session_predict(
+                        session_id,
+                        screenshot=shot,
+                        instruction=instruction,
+                        include_reasoning=self.include_reasoning,
+                    )
+                except CoastyError as exc:
+                    lost = exc.code == "SESSION_NOT_FOUND" or exc.status == 404
+                    if not lost or recoveries >= max_recoveries:
+                        raise
+                    recoveries += 1
+                    session_id, credits = self._new_session(captured, session_kwargs)
+                    result.credits += credits
+                    result.session_id = session_id
+                    if not session_id:
+                        result.reason = "could not reopen a session after it was lost"
+                        return result
+                    # Kept on the step itself, not just echoed to the console.
+                    # A recovery that happened but left no trace in the record
+                    # is indistinguishable afterwards from a run that never
+                    # hit trouble, which is the wrong story to tell.
+                    step.recovered = True
+                    print(f"    session lost, reopened ({recoveries}/{max_recoveries})",
+                          flush=True)
+                    raw = self.client.session_predict(
+                        session_id,
+                        screenshot=shot,
+                        instruction=instruction,
+                        include_reasoning=self.include_reasoning,
+                    )
+
                 prediction: Prediction = parse_prediction(raw)
                 step.raw = raw if isinstance(raw, dict) else None
                 step.actions = prediction.actions
