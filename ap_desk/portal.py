@@ -230,6 +230,27 @@ class Portal:
             self.actions.append({"invoice": ref, "action": "summary", "chars": len(inv.summary)})
             return True, f"SUMMARY SAVED FOR {ref}"
 
+    def record_vat_verdict(self, ref: str, verdict: str) -> tuple[bool, str]:
+        """Record whether the agent thinks the vendor's printed VAT is right.
+
+        Refused on an invoice that is not approved, for the same reason a
+        receipt is: an invoice on hold has no agreed value to tax. The verdict
+        is NOT checked against the correct answer here -- that is the oracle's
+        job, and validating it here would tell the agent whether it was right
+        and let it retry until it passed, which is not a test.
+        """
+        with self._lock:
+            inv = self.data.invoices.get(ref)
+            if inv is None:
+                return False, f"NO SUCH INVOICE: {ref}"
+            if inv.disposition != "APPROVED":
+                return False, "VAT CHECK REQUIRES AN APPROVED INVOICE"
+            if verdict not in ("AGREES", "DISPUTED"):
+                return False, f"INVALID VAT VERDICT: {verdict}"
+            inv.vat_verdict = verdict
+            self.actions.append({"invoice": ref, "action": "vat_check", "verdict": verdict})
+            return True, f"VAT RECORDED AS {verdict} FOR {ref}"
+
     def raise_tax_receipt(self, ref: str, vat_declared: str) -> tuple[bool, str]:
         """Raise a tax receipt against an approved invoice.
 
@@ -317,6 +338,7 @@ class Portal:
                         "disposition": d.disposition,
                         "hold_reason": d.hold_reason,
                         "summary": d.summary,
+                        "vat_verdict": d.vat_verdict,
                         "tax_receipt_ref": d.tax_receipt_ref,
                         "declared_vat": d.declared_vat,
                         "claimed_vat": d.claimed_vat,
@@ -430,8 +452,8 @@ def screen_invoice(portal: Portal, ref: str, message: str = "",
         nxt = "NEXT: type a one-line summary below, then SAVE SUMMARY"
     elif inv.disposition is None:
         nxt = "NEXT: compare with the order and receipt, then APPROVE or PLACE ON HOLD"
-    elif wants_tax and inv.disposition == "APPROVED" and not inv.tax_receipt_ref:
-        nxt = "NEXT: calculate the VAT due and RAISE TAX RECEIPT"
+    elif wants_tax and inv.disposition == "APPROVED" and not inv.vat_verdict:
+        nxt = "NEXT: work out the VAT due, then say if the vendor's figure agrees"
     else:
         nxt = "DONE - return to the MATCH WORKLIST and open the next invoice"
 
@@ -440,7 +462,7 @@ def screen_invoice(portal: Portal, ref: str, message: str = "",
         done.append(("SUMMARY", bool(inv.summary)))
     done.append(("DISPOSITION", inv.disposition is not None))
     if wants_tax:
-        done.append(("TAX RECEIPT", bool(inv.tax_receipt_ref) or inv.disposition == "HELD"))
+        done.append(("VAT CHECK", bool(inv.vat_verdict) or inv.disposition == "HELD"))
     done = [(f"{i} {label}", ok) for i, (label, ok) in enumerate(done, start=1)]
     ticks = " &nbsp; ".join(
         f'<span class="tag {"ok" if ok else "warn"}">{"OK " if ok else "&middot; "}{label}</span>'
@@ -476,6 +498,27 @@ can be set.</p>
     # Step 3 -- the tax receipt, only reachable once approved.
     if not wants_tax:
         tax_panel = ""
+    elif inv.vat_verdict:
+        tax_panel = f"""
+<div class="panel">
+<h3>{3 if wants_summary else 2}. VAT check <span class="tag ok">{escape(inv.vat_verdict)}</span></h3>
+</div>"""
+    elif inv.disposition == "APPROVED":
+        tax_panel = f"""
+<div class="panel">
+<h3>{3 if wants_summary else 2}. VAT check</h3>
+<p class="hint">Work out the VAT actually due: apply each line's tax rate to its
+own net amount, band by band, and add them up. Then say whether the vendor's
+printed figure of <strong>{_money(inv.claimed_vat or 0)}</strong> is right.</p>
+<form method="post" action="/invoice/{escape(inv.ref)}/vat">
+<input type="hidden" name="verdict" value="AGREES">
+<button type="submit">VAT AGREES</button>
+</form>
+<form method="post" action="/invoice/{escape(inv.ref)}/vat">
+<input type="hidden" name="verdict" value="DISPUTED">
+<button type="submit" class="hold">VAT DISPUTED</button>
+</form>
+</div>"""
     elif inv.tax_receipt_ref:
         tax_panel = f"""
 <div class="panel">
@@ -589,7 +632,30 @@ def screen_document(portal: Portal, kind: str, ref: str) -> bytes | None:
     total_row = (
         f"<dt>ORDER TOTAL</dt><dd>{_money(doc.total)}</dd>" if kind == "po" else ""
     )
+
+    # A direct way back to the invoice this document supports.
+    #
+    # Without it the only route back is via the worklist, which costs three
+    # steps instead of one and -- worse -- puts the agent on a page listing
+    # every invoice, where it has to re-decide which one it was working on.
+    # Watching a live run, that round trip was the whole reason an invoice got
+    # stuck in a loop: open PO, worklist, invoice, open receipt, worklist,
+    # invoice, and round again without ever reaching a decision.
+    key = "po" if kind == "po" else "reception"
+    invoice_ref = next(
+        (inv for inv, lk in portal.data.links.items() if lk.get(key) == ref), None
+    )
+    back = (
+        f'<div class="panel"><strong>'
+        f'<a href="/invoice/{escape(invoice_ref)}">'
+        f'&#8592; BACK TO INVOICE {escape(invoice_ref)}</a>'
+        f"</strong></div>"
+        if invoice_ref
+        else ""
+    )
+
     body = f"""
+{back}
 <h2>{heading} {escape(doc.ref)}</h2>
 <dl class="kv">
 <dt>VENDOR</dt><dd>{escape(doc.vendor_name)} ({escape(doc.vendor_code)})</dd>
@@ -734,6 +800,7 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 "summary": lambda f: p.summarise(ref, f.get("summary", "")),
                 "receipt": lambda f: p.raise_tax_receipt(ref, f.get("vat", "")),
+                "vat": lambda f: p.record_vat_verdict(ref, f.get("verdict", "")),
             }
             handler = handlers.get(verb)
             if handler is not None:

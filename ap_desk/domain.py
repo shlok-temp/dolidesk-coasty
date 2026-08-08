@@ -182,6 +182,11 @@ class Document:
     declared_vat: float | None = None
     # The agent's own written summary of the invoice, recorded before it rules.
     summary: str | None = None
+    # The agent's judgement on the vendor's printed VAT: 'AGREES' or 'DISPUTED'.
+    # A verdict rather than a typed figure -- the arithmetic is the same either
+    # way, but a two-button answer is a click instead of a text entry, and the
+    # typing step is where live runs kept stalling.
+    vat_verdict: str | None = None
 
     @property
     def total(self) -> float:

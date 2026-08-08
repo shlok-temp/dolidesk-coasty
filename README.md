@@ -45,25 +45,23 @@ Twelve vendor invoices sit in a worklist, deliberately unsorted, so the agent
 cannot succeed by reading row one. For each invoice it performs three steps in
 order.
 
-**1 · Read and summarise.** Opens the invoice, its purchase order and its goods
-receipt, then types a plain-English summary into the terminal. The portal will
-not accept a disposition until the summary is recorded, so the agent has to read
-before it rules.
+**Match and dispose** *(always on)*. Opens the invoice, then its purchase order
+and its goods receipt, and compares all three line by line. Approves when prices
+and quantities agree within tolerance; otherwise holds the invoice and selects a
+reason code. Five invoices are clean; seven carry a planted defect — billed above
+the agreed price, below it, or for more than was received. Two carry two at once.
 
-**2 · Match and dispose.** Compares all three documents line by line. Approves
-when prices and quantities agree within tolerance; otherwise holds the invoice
-and selects a reason code. Five invoices are clean; seven carry a planted defect
-— billed above the agreed price, below it, or for more than was received. Two
-carry two defects at once.
+**VAT check** *(`--with-tax`)*. Each line carries a VAT band — standard 20%,
+reduced 5%, or zero. The agent totals each band separately, applies that band's
+rate, and says whether the vendor's printed VAT figure agrees. On three invoices
+**it does not**, so accepting what is printed scores as a failure.
 
-**3 · Assess tax and file a receipt.** Each line carries a VAT band — standard
-20%, reduced 5%, or zero. The agent totals each band separately, applies that
-band's rate, and files a tax receipt. The invoice also prints a VAT figure
-claimed by the vendor, and on three invoices **that figure is wrong**: copying it
-scores as a failure.
+**Written summary** *(`--with-summary`)*. A one-line plain-English summary typed
+into the terminal before the invoice can be dispositioned, graded for grounding.
 
-**36 documents opened, 12 summaries, 12 decisions, 5 tax receipts, ~96 steps.**
-The step count comes from the size of the queue, not from padding.
+The stages are separate switches because they were built up one at a time and
+each has to hold on its own. The match flow alone is a complete automation:
+**36 documents opened, 12 decisions, ~50 steps** on the full queue.
 
 ## Why this is a real test, not a demo
 
@@ -85,7 +83,7 @@ FA-2582    HELD       APPROVED   WRONG DISPOSITION  (PRICE_OVER_PO)
 FA-2583    APPROVED   -          NOT ACTIONED
 FA-2584    HELD       HELD       RIGHT HOLD, WRONG REASON
 FA-2585    APPROVED   APPROVED   RIGHT CALL, WRONG VAT
-FA-2586    APPROVED   APPROVED   APPROVED, NO TAX RECEIPT
+FA-2586    APPROVED   APPROVED   APPROVED, NO VAT CHECK
 FA-2587    HELD       HELD       CORRECT, UNGROUNDED SUMMARY
 ```
 
@@ -107,21 +105,21 @@ independently.
 ### Offline — no key, no cost, no network
 
 ```bash
-python -m ap_desk rehearse            # all 12 invoices
-python -m ap_desk rehearse --demo     # the 5-invoice demo queue
+python -m ap_desk rehearse                     # all 12 invoices
+python -m ap_desk rehearse --demo              # the 5-invoice demo queue
+python -m ap_desk rehearse --demo --with-tax   # add the VAT check
 ```
 
 ```
   INVOICE    EXPECTED  ACTUAL      VAT DUE  DECLARED  RESULT
-  FA-2581    APPROVED  APPROVED    2655.56   2655.56  CORRECT
+  FA-2581    APPROVED  APPROVED    2655.56         -  CORRECT
   FA-2582    HELD      HELD         256.49         -  CORRECT
-  FA-2583    APPROVED  APPROVED    2515.16   2515.16  CORRECT
+  FA-2583    APPROVED  APPROVED    2515.16         -  CORRECT
   FA-2584    HELD      HELD          72.48         -  CORRECT
-  FA-2585    APPROVED  APPROVED    1466.08   1466.08  CORRECT
+  FA-2585    APPROVED  APPROVED    1466.08         -  CORRECT
 
   actioned            5/5
-  summaries grounded  5/5 written
-  tax receipts        3 raised, 3/3 with correct VAT
+  vat checks          3 made, 3/3 with correct VAT
   fully correct       5/5  (100.0%)
   verdict             PASS
 ```
@@ -164,7 +162,9 @@ read the action stream before anything touches your desktop.
 | Flag | Effect |
 |---|---|
 | `--demo` | the 5-invoice queue, sized to finish inside a short recording |
-| `--kiosk` | fullscreen, no browser chrome — records better |
+| `--kiosk` | app-mode window with no browser chrome — records better |
+| `--with-tax` | also require the VAT check on approved invoices |
+| `--with-summary` | also require a written summary per invoice |
 | `--steps N` | lower the step cap for a quick sanity pass |
 | `--keep-browser` | leave the browser open afterwards to inspect the queue |
 | `--no-browser` | drive whatever window is already in front |
@@ -266,7 +266,7 @@ ap_desk/
   cli.py        portal · doctor · estimate · rehearse · run
 tools/
   apicheck.py   graded live API diagnostics (free calls first)
-tests/          99 tests, standard library only
+tests/          116 tests, standard library only
 ```
 
 The core is **standard library only** — no install needed for the portal, oracle,
@@ -276,7 +276,7 @@ driver and imported lazily, so importing anything else never pulls them in.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v      # 99 tests, offline, no key
+python -m unittest discover -s tests -v      # 116 tests, offline, no key
 ```
 
 - **`test_domain.py`** — every planted defect produces exactly the finding it was

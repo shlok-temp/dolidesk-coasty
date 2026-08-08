@@ -210,3 +210,77 @@ class SummaryGrounding(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VatVerdictGrading(unittest.TestCase):
+    """The two-button VAT check is graded against recomputed truth.
+
+    Typing a figure is where live runs kept stalling, so the tax stage asks for
+    a judgement instead: does the vendor's printed VAT agree with yours? The
+    arithmetic required is identical -- only the input is a click rather than a
+    text entry -- so the grading has to be just as strict.
+    """
+
+    def setUp(self):
+        self.data = build()
+
+    def _clean_but_taxed_wrong(self) -> str:
+        """An invoice that matches cleanly but whose printed VAT is wrong.
+
+        Both conditions are required. VAT is only graded on an invoice the agent
+        correctly APPROVED, so a VAT-error invoice that also fails the match
+        never reaches the tax check -- picking one of those tests nothing, which
+        is exactly the mistake this helper exists to prevent.
+        """
+        from ap_desk.domain import match_invoice
+
+        for position in VAT_ERRORS:
+            ref = invoice_ref(position)
+            if match_invoice(self.data, ref)["expected_disposition"] == "APPROVED":
+                return ref
+        raise AssertionError("the seed has no cleanly-matched invoice with a VAT error")
+
+    def _verdict_score(self, ref: str, verdict: str):
+        from ap_desk.oracle import score
+
+        state = {"invoices": {ref: {"disposition": "APPROVED", "vat_verdict": verdict}}}
+        return next(s for s in score(self.data, state).scores if s.invoice == ref)
+
+    def test_agreeing_with_a_correct_vendor_figure_is_right(self):
+        ref = invoice_ref(1)  # no planted VAT error
+        self.assertTrue(assess_tax(self.data, ref)["vendor_vat_correct"])
+        self.assertTrue(self._verdict_score(ref, "AGREES").vat_correct)
+
+    def test_agreeing_with_a_wrong_vendor_figure_is_caught(self):
+        # The whole point: an agent that does not do the arithmetic will accept
+        # whatever is printed, and must be marked down for it.
+        ref = self._clean_but_taxed_wrong()
+        self.assertFalse(assess_tax(self.data, ref)["vendor_vat_correct"])
+        s = self._verdict_score(ref, "AGREES")
+        self.assertFalse(s.vat_correct)
+        self.assertEqual(s.status, "RIGHT CALL, WRONG VAT")
+
+    def test_disputing_a_wrong_vendor_figure_is_right(self):
+        ref = self._clean_but_taxed_wrong()
+        self.assertTrue(self._verdict_score(ref, "DISPUTED").vat_correct)
+
+    def test_disputing_a_correct_vendor_figure_is_caught(self):
+        ref = invoice_ref(1)
+        self.assertFalse(self._verdict_score(ref, "DISPUTED").vat_correct)
+
+    def test_no_verdict_on_an_approved_invoice_is_unfinished(self):
+        from ap_desk.oracle import score
+
+        ref = invoice_ref(1)
+        state = {"invoices": {ref: {"disposition": "APPROVED"}}}
+        s = next(x for x in score(self.data, state).scores if x.invoice == ref)
+        self.assertEqual(s.status, "APPROVED, NO VAT CHECK")
+
+    def test_a_held_invoice_needs_no_verdict(self):
+        from ap_desk.oracle import score
+
+        ref = invoice_ref(2)  # planted match defect -> should be HELD
+        state = {"invoices": {ref: {"disposition": "HELD",
+                                    "hold_reason": "PRICE_OVER_PO"}}}
+        s = next(x for x in score(self.data, state).scores if x.invoice == ref)
+        self.assertEqual(s.status, "CORRECT")

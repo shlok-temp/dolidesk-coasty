@@ -74,20 +74,25 @@ TASK_SUMMARY = (
 )
 
 TASK_DISPOSITION = (
-    "DISPOSITION. Open the PURCHASE ORDER and GOODS RECEIPT links to read their "
-    "quantities and prices. Every line must be billed at the purchase order's price, "
-    "within 2 percent or 0.50, and for no more than the quantity on the goods "
-    "receipt. If all lines pass, click APPROVE FOR PAYMENT. Otherwise pick the reason "
-    "in the dropdown and click PLACE ON HOLD: PRICE_OVER_PO when billed above the "
-    "order, PRICE_UNDER_PO when billed below it, QTY_OVER_RECEIPT when billed for "
-    "more than was received.\n\n"
+    "DISPOSITION. Open the PURCHASE ORDER link, read its quantities and prices, then "
+    "use the BACK TO INVOICE link at the top. Open the GOODS RECEIPT link, read its "
+    "quantities, then use BACK TO INVOICE again.\n\n"
+    "Open each of those two documents ONCE. As soon as you have seen both, decide on "
+    "this invoice immediately - do not re-open them and do not go back to the worklist "
+    "to check again. Every line must be billed at the purchase order's price, within 2 "
+    "percent or 0.50, and for no more than the quantity on the goods receipt. If all "
+    "lines pass, click APPROVE FOR PAYMENT. Otherwise pick the reason in the dropdown "
+    "and click PLACE ON HOLD: PRICE_OVER_PO when billed above the order, "
+    "PRICE_UNDER_PO when billed below it, QTY_OVER_RECEIPT when billed for more than "
+    "was received.\n\n"
 )
 
 TASK_TAX = (
-    "TAX RECEIPT. Only on an approved invoice. Add up the net amounts for each tax "
-    "code separately, apply that code's percentage to its own subtotal, add the "
-    "results, type that number in the VAT DUE box and click RAISE TAX RECEIPT. Ignore "
-    "the vendor's printed VAT figure - it is sometimes wrong.\n\n"
+    "VAT CHECK. This panel appears only after you approve an invoice. Work out the "
+    "VAT actually due: take each line's net amount, group the lines by their tax "
+    "code, apply that code's percentage to its group's subtotal, and add the results. "
+    "Compare your figure with the vendor's printed VAT shown on the invoice. Click "
+    "VAT AGREES if they match, or VAT DISPUTED if they do not.\n\n"
 )
 
 TASK_TAIL = (
@@ -326,7 +331,8 @@ def _scripted_walk(base: str, ledger: Ledger, limit: int | None = None, *,
         post(f"/invoice/{ref}/dispose", **fields)
 
         if with_tax and disposition == "APPROVED":
-            post(f"/invoice/{ref}/receipt", vat=f"{tax['vat_total']:.2f}")
+            post(f"/invoice/{ref}/vat",
+                 verdict="AGREES" if tax["vendor_vat_correct"] else "DISPUTED")
 
         ledger.claim(f"{ref}.disposition", disposition, None)
         ledger.write(op="dispose", ref=ref, frame_index=None,

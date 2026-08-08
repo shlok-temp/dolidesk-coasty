@@ -355,8 +355,18 @@ def open_focused(
         "--start-maximized",
     ]
     if kiosk:
-        args.append("--kiosk")
-    args.append(url)
+        # App mode, NOT --kiosk.
+        #
+        # Both hide the tab strip and address bar, which is what makes a clean
+        # recording. But --kiosk puts Chrome into a true fullscreen window, and
+        # screen recorders frequently cannot capture those: OBS window-capture
+        # misses them entirely, and display-capture can come back black.
+        #
+        # --app gives an ordinary, maximisable window with no browser chrome.
+        # It looks the same on camera and records like any other window.
+        args.append(f"--app={url}")
+    else:
+        args.append(url)
 
     try:
         process = subprocess.Popen(

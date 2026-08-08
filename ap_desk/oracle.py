@@ -48,6 +48,8 @@ class InvoiceScore:
     # The agent's written summary.
     summary: str | None = None
     summary_grounded: bool | None = None
+    # The agent's judgement on the vendor's printed VAT, and whether it was right.
+    vat_verdict: str | None = None
     # Whether the tax stage was switched on for this run. Without it, an
     # invoice would be reported as missing a receipt the terminal never offered.
     tax_graded: bool = True
@@ -63,7 +65,7 @@ class InvoiceScore:
         if self.vat_correct is False:
             return "RIGHT CALL, WRONG VAT"
         if self.tax_graded and self.vat_correct is None and self.expected == "APPROVED":
-            return "APPROVED, NO TAX RECEIPT"
+            return "APPROVED, NO VAT CHECK"
         if self.summary_grounded is False:
             return "CORRECT, UNGROUNDED SUMMARY"
         return "CORRECT"
@@ -117,7 +119,7 @@ class Report:
 
     @property
     def receipts_raised(self) -> int:
-        return sum(1 for s in self.scores if s.receipt_ref)
+        return sum(1 for s in self.scores if s.receipt_ref or s.vat_verdict)
 
     @property
     def vat_correct_count(self) -> int:
@@ -166,6 +168,7 @@ class Report:
                     "declared_vat": s.declared_vat,
                     "vat_correct": s.vat_correct,
                     "receipt_ref": s.receipt_ref,
+                    "vat_verdict": s.vat_verdict,
                     "summary": s.summary,
                     "summary_grounded": s.summary_grounded,
                     "status": s.status,
@@ -280,13 +283,21 @@ def score(data: Dataset, state: dict, *, grade_summary: bool = True,
         # an invoice the agent correctly approved. Grading it on a hold would
         # penalise the agent for correctly declining to raise one.
         declared = actual.get("declared_vat")
+        verdict = actual.get("vat_verdict")
         if not grade_tax:
             vat_correct = None
         elif correct and expected_disp == "APPROVED":
-            vat_correct = (
-                None if declared is None
-                else abs(declared - tax["vat_total"]) < 0.005
-            )
+            # Two ways to have answered, graded the same way. The verdict form
+            # ("does the vendor's figure agree?") and the typed form ("what is
+            # the VAT?") both require the same arithmetic; only the input
+            # differs, so both are checked against the recomputed total.
+            if verdict is not None:
+                should_agree = tax["vendor_vat_correct"]
+                vat_correct = (verdict == "AGREES") == bool(should_agree)
+            elif declared is not None:
+                vat_correct = abs(declared - tax["vat_total"]) < 0.005
+            else:
+                vat_correct = None
         else:
             vat_correct = None
 
@@ -311,6 +322,7 @@ def score(data: Dataset, state: dict, *, grade_summary: bool = True,
                 summary=summary,
                 summary_grounded=grounded,
                 tax_graded=grade_tax,
+                vat_verdict=verdict,
             )
         )
     return Report(scores, grade_tax=grade_tax)
@@ -342,7 +354,7 @@ def render(report: Report) -> str:
         "",
         f"  actioned            {report.actioned}/{report.total}",
         f"  summaries grounded  {report.summaries_grounded}/{report.summaries_written} written",
-        f"  tax receipts        {report.receipts_raised} raised, "
+        f"  vat checks          {report.receipts_raised} made, "
         f"{report.vat_correct_count}/{report.vat_due_count} with correct VAT",
         f"  fully correct       {report.fully_correct}/{report.total}"
         f"  ({report.accuracy * 100:.1f}%)",
