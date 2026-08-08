@@ -60,33 +60,28 @@ DEMO_EXPECTED_STEPS = 42
 DEMO_MAX_STEPS = 60
 
 TASK = (
-    "You are working the accounts-payable desk on the DoliDesk terminal at {url}. "
-    "Sign on with the operator ID already shown on the sign-on screen, then open the "
-    "INVOICE MATCH WORKLIST from the function menu. Work through EVERY invoice on that "
-    "worklist, one at a time. The list is not sorted by anything useful, so do not skip "
-    "any.\n\n"
-    "For each invoice, do these three things in order.\n\n"
-    "STEP 1 - SUMMARY. Open the invoice and read its line items. Open its purchase order "
-    "and its goods receipt using the links on the invoice screen. Then write a short "
-    "plain-English summary in the summary box naming the vendor and what was bought, and "
-    "save it. The summary must be about THIS invoice.\n\n"
-    "STEP 2 - DISPOSITION. Compare the three documents line by line. An invoice is "
-    "payable only if every line was billed at the price agreed on the purchase order and "
-    "for no more than the quantity recorded on the goods receipt. Treat a unit price "
-    "within 2 percent, or within 0.50, of the ordered price as agreeing. If every line "
-    "agrees, use APPROVE FOR PAYMENT. If any line disagrees, use PLACE ON HOLD and choose "
-    "the reason code matching the first problem you found: PRICE_OVER_PO when billed above "
-    "the order, PRICE_UNDER_PO when billed below it, QTY_OVER_RECEIPT when billed for more "
-    "than was received.\n\n"
-    "STEP 3 - TAX RECEIPT. If and only if you approved the invoice, raise a tax receipt. "
-    "Work out the VAT due yourself: each line shows a tax code and its rate, so add up the "
-    "net amounts for each tax band separately, apply that band's rate to its own net total, "
-    "and add the results. Round to two decimal places. The invoice also prints a VAT figure "
-    "claimed by the vendor, but that figure is sometimes wrong, so do not copy it - enter "
-    "the amount YOU calculated. Do not raise a receipt for an invoice you placed on hold.\n\n"
-    "When every invoice on the worklist has been through all three steps, report how many "
-    "you approved, how many you placed on hold with the reason for each, and the total VAT "
-    "you declared across all the receipts you raised."
+    "You are an accounts-payable clerk using the DoliDesk terminal at {url}.\n\n"
+    "Act on every turn. Do not narrate - emit the action.\n\n"
+    "Sign on, then open INVOICE MATCH WORKLIST. Work the invoices strictly top to "
+    "bottom. Finish one completely before opening the next, and never reopen an "
+    "invoice you have already actioned.\n\n"
+    "Each invoice screen shows a NEXT: line telling you which of its three steps is "
+    "outstanding. Follow it.\n\n"
+    "1. SUMMARY. Click the summary text box and type ONE short sentence naming the "
+    "vendor and the main item, about 12 words, then click SAVE SUMMARY.\n"
+    "2. DISPOSITION. Open the PURCHASE ORDER and GOODS RECEIPT links to read their "
+    "quantities and prices. Every line must be billed at the purchase order's price, "
+    "within 2 percent or 0.50, and for no more than the quantity on the goods "
+    "receipt. If all lines pass, click APPROVE FOR PAYMENT. Otherwise pick the reason "
+    "in the dropdown and click PLACE ON HOLD: PRICE_OVER_PO when billed above the "
+    "order, PRICE_UNDER_PO when billed below it, QTY_OVER_RECEIPT when billed for "
+    "more than was received.\n"
+    "3. TAX RECEIPT. Only on an approved invoice. Add up the net amounts for each tax "
+    "code separately, apply that code's percentage to its own subtotal, add the "
+    "results, type that number in the VAT DUE box and click RAISE TAX RECEIPT. Ignore "
+    "the vendor's printed VAT figure - it is sometimes wrong.\n\n"
+    "Then click MATCH WORKLIST and open the next invoice. When every invoice shows "
+    "APPROVED or ON HOLD, report how many you approved and how many you held."
 )
 
 
@@ -457,6 +452,7 @@ def cmd_run(args) -> int:
             dry_run=args.dry_run,
             stop_file=stop_file,
             on_step=on_step,
+            include_reasoning=args.explain,
         )
         result = driver.run(TASK.format(url=base))
         elapsed = time.time() - started
@@ -582,6 +578,9 @@ def build_parser() -> "argparse.ArgumentParser":
                    help="leave the browser open after the run, to inspect final state")
     p.add_argument("--kiosk", action="store_true",
                    help="fullscreen with no browser chrome; cleaner for recording")
+    p.add_argument("--explain", action="store_true",
+                   help="ask the model for reasoning too. Useful for debugging, but it "
+                        "spends output budget that the actions need and can stall a run")
     p.add_argument("--demo", action="store_true",
                    help=f"the {DEMO_LIMIT}-invoice demo queue, sized for a short recording")
     p.add_argument("--steps", type=int, default=None,

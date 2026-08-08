@@ -77,32 +77,32 @@ body{margin:0;background:#e8ebf0;color:#16233a;
      font:15px/1.55 'Segoe UI','Helvetica Neue',Arial,sans-serif}
 a{color:#0b5cd8;text-decoration:none;border-bottom:1px solid #9dc4f5}
 a:hover{color:#00317f;border-bottom-color:#0b5cd8}
-.wrap{max-width:1120px;margin:0 auto;padding:18px 22px 60px}
+.wrap{max-width:1120px;margin:0 auto;padding:12px 22px 40px}
 .bar{background:linear-gradient(180deg,#12325e,#0d2547);border-bottom:3px solid #1e9bff;
      padding:11px 22px;display:flex;justify-content:space-between;align-items:baseline;
      box-shadow:0 1px 6px rgba(12,40,80,.35)}
 .bar h1{margin:0;font-size:18px;letter-spacing:1.5px;color:#eaf4ff;font-weight:600}
 .bar .sub{font-size:12px;color:#7fd0ff;letter-spacing:1.2px}
 h2{font-size:15px;letter-spacing:.8px;color:#0d2547;border-bottom:2px solid #1e9bff;
-   padding-bottom:6px;margin:22px 0 14px;text-transform:uppercase;font-weight:600}
-h3{font-size:13px;letter-spacing:.6px;color:#12325e;margin:16px 0 8px;text-transform:uppercase}
-table{width:100%;border-collapse:collapse;margin:10px 0 18px;background:#fff;
+   padding-bottom:5px;margin:12px 0 10px;text-transform:uppercase;font-weight:600}
+h3{font-size:13px;letter-spacing:.6px;color:#12325e;margin:0 0 8px;text-transform:uppercase}
+table{width:100%;border-collapse:collapse;margin:6px 0 12px;background:#fff;
       box-shadow:0 1px 3px rgba(20,40,70,.13)}
 th{text-align:left;font-size:11.5px;letter-spacing:.9px;color:#0d2547;background:#d3dcea;
    border-bottom:2px solid #1e9bff;padding:7px 10px;text-transform:uppercase}
-td{padding:7px 10px;border-bottom:1px solid #dfe5ee;color:#16233a}
+td{padding:5px 10px;border-bottom:1px solid #dfe5ee;color:#16233a}
 tr:hover td{background:#eff6ff}
 .num{text-align:right;font-variant-numeric:tabular-nums;
      font-family:'Consolas','DejaVu Sans Mono',monospace}
-.kv{display:grid;grid-template-columns:220px 1fr;gap:5px 16px;margin:10px 0 18px}
+.kv{display:grid;grid-template-columns:200px 1fr;gap:3px 16px;margin:6px 0 12px}
 .kv dt{color:#3d5a80;font-size:12.5px;letter-spacing:.7px;text-transform:uppercase}
 .kv dd{margin:0;color:#0d2547;font-weight:600}
-.panel{border:1px solid #b9c8dd;border-left:4px solid #1e9bff;padding:14px 18px;
-       margin:16px 0;background:#f6f9fd;box-shadow:0 1px 3px rgba(20,40,70,.10)}
+.panel{border:1px solid #b9c8dd;border-left:4px solid #1e9bff;padding:11px 16px;
+       margin:10px 0;background:#f6f9fd;box-shadow:0 1px 3px rgba(20,40,70,.10)}
 .tag{display:inline-block;padding:2px 9px;border:1px solid currentColor;font-size:11.5px;
      letter-spacing:.8px;font-weight:600;border-radius:2px}
 .ok{color:#0a6b3d}.warn{color:#8a5a00}.held{color:#b3231c}.info{color:#0b5cd8}
-.nav{margin:14px 0;font-size:13px;padding-bottom:10px;border-bottom:1px solid #cdd8e8}
+.nav{margin:8px 0;font-size:13px;padding-bottom:7px;border-bottom:1px solid #cdd8e8}
 .nav a{margin-right:20px}
 form{margin:8px 0}
 button{font:600 14px 'Segoe UI',Arial,sans-serif;background:linear-gradient(180deg,#1e9bff,#0b5cd8);
@@ -404,6 +404,34 @@ def screen_invoice(portal: Portal, ref: str, message: str = "",
     claimed = (f'<dt>VAT CLAIMED BY VENDOR</dt><dd>{_money(inv.claimed_vat)}</dd>'
                if inv.claimed_vat is not None else "")
 
+    # A progress strip naming the NEXT action.
+    #
+    # Without it the agent has to reconstruct where it is in the workflow from
+    # the page alone, every turn, and it gets that wrong in an expensive way:
+    # observed a live run spend six of its first ten steps navigating back to
+    # the worklist to re-check things it had already read. A real terminal
+    # would show the operator what is outstanding, so showing it is realistic
+    # as well as cheaper. It states the STEP, never the answer.
+    if not inv.summary:
+        nxt = "NEXT: type a one-line summary below, then SAVE SUMMARY"
+    elif inv.disposition is None:
+        nxt = "NEXT: compare with the order and receipt, then APPROVE or PLACE ON HOLD"
+    elif inv.disposition == "APPROVED" and not inv.tax_receipt_ref:
+        nxt = "NEXT: calculate the VAT due and RAISE TAX RECEIPT"
+    else:
+        nxt = "DONE - return to the MATCH WORKLIST and open the next invoice"
+
+    done = [
+        ("1 SUMMARY", bool(inv.summary)),
+        ("2 DISPOSITION", inv.disposition is not None),
+        ("3 TAX RECEIPT", bool(inv.tax_receipt_ref) or inv.disposition == "HELD"),
+    ]
+    ticks = " &nbsp; ".join(
+        f'<span class="tag {"ok" if ok else "warn"}">{"OK " if ok else "&middot; "}{label}</span>'
+        for label, ok in done
+    )
+    progress = f'<div class="panel"><strong>{escape(nxt)}</strong><br>{ticks}</div>'
+
     # Step 1 -- the written summary. Shown as done once recorded, so an agent
     # re-reading the screen can tell what it has already completed.
     if inv.summary:
@@ -459,21 +487,8 @@ hold has no agreed value, so no receipt can be raised against it.</p>
 
     body = f"""
 {banner}
-<h2>VENDOR INVOICE {escape(inv.ref)}</h2>
-<dl class="kv">
-<dt>VENDOR</dt><dd>{escape(inv.vendor_name)} ({escape(inv.vendor_code)})</dd>
-<dt>INVOICE DATE</dt><dd>{escape(inv.doc_date)}</dd>
-<dt>NET TOTAL</dt><dd>{_money(inv.total)}</dd>
-{claimed}
-<dt>STATUS</dt><dd><span class="tag {cls}">{escape(state)}</span></dd>
-{reason}
-</dl>
-{_lines_table_taxed(inv.lines)}
-<div class="panel">
-<strong>SUPPORTING DOCUMENTS</strong><br>
-<a href="/po/{escape(link['po'])}">PURCHASE ORDER {escape(link['po'])}</a> &nbsp;&middot;&nbsp;
-<a href="/reception/{escape(link['reception'])}">GOODS RECEIPT {escape(link['reception'])}</a>
-</div>
+<h2>VENDOR INVOICE {escape(inv.ref)} &nbsp;<span class="tag {cls}">{escape(state)}</span></h2>
+{progress}
 {summary_panel}
 <div class="panel">
 <h3>2. Disposition</h3>
@@ -487,7 +502,21 @@ hold has no agreed value, so no receipt can be raised against it.</p>
 <button type="submit" class="hold">PLACE ON HOLD</button>
 </form>
 </div>
-{tax_panel}"""
+{tax_panel}
+<div class="panel">
+<strong>SUPPORTING DOCUMENTS</strong> &nbsp;
+<a href="/po/{escape(link['po'])}">PURCHASE ORDER {escape(link['po'])}</a> &nbsp;&middot;&nbsp;
+<a href="/reception/{escape(link['reception'])}">GOODS RECEIPT {escape(link['reception'])}</a>
+</div>
+<h3>Invoice lines</h3>
+{_lines_table_taxed(inv.lines)}
+<dl class="kv">
+<dt>VENDOR</dt><dd>{escape(inv.vendor_name)} ({escape(inv.vendor_code)})</dd>
+<dt>INVOICE DATE</dt><dd>{escape(inv.doc_date)}</dd>
+<dt>NET TOTAL</dt><dd>{_money(inv.total)}</dd>
+{claimed}
+{reason}
+</dl>"""
     return _page(f"Invoice {ref}", body, CRUMB)
 
 
@@ -587,6 +616,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # noqa: A003 - quiet by default
         if getattr(self.server, "verbose", False):
             super().log_message(fmt, *args)
+
+    def handle_one_request(self):
+        """Serve one request, treating a dropped connection as routine.
+
+        A browser holds keep-alive sockets open. When the run finishes and the
+        portal shuts down -- or the operator closes the window -- those sockets
+        reset, and ThreadingHTTPServer prints a full traceback per socket. On a
+        recording that is a screenful of red at the exact moment the result
+        table should be readable, and it describes nothing wrong: the client
+        simply left.
+        """
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            self.close_connection = True
+
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            self.close_connection = True
 
     # -- helpers ---------------------------------------------------------- #
 

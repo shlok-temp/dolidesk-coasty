@@ -98,6 +98,10 @@ class Step:
     note: str = ""
     performed: bool = False
     credits: int = 0
+    # The unparsed response. A run that ends in `fail` is almost impossible to
+    # diagnose without it: the console shows a truncated reasoning string and
+    # nothing about why the model produced no action.
+    raw: dict | None = None
 
 
 @dataclass
@@ -126,6 +130,7 @@ class LocalDriver:
         stop_file: Path | None = None,
         on_step: Callable[[Step], None] | None = None,
         settle_seconds: float = 0.7,
+        include_reasoning: bool = False,
     ) -> None:
         self.client = client
         self.max_steps = max_steps
@@ -134,6 +139,21 @@ class LocalDriver:
         self.stop_file = stop_file
         self.on_step = on_step or (lambda _: None)
         self.settle_seconds = settle_seconds
+        # Reasoning OFF by default, which is not the obvious choice and is worth
+        # the explanation.
+        #
+        # A turn has a bounded output budget shared between the reasoning text
+        # and the actions. Asked to type a sentence into a form, the model
+        # narrates first -- prose plus a ```python agent.click(...)``` block --
+        # exhausts the budget mid-string, and emits NO valid action. Coasty
+        # then returns status `fail` and the run ends. Observed twice in live
+        # runs, both times at the exact step where it had to type a summary,
+        # with the reasoning truncated mid-word.
+        #
+        # Asking for shorter reasoning in the prompt did not fix it. Turning it
+        # off does, because the budget goes to the actions instead. The cost is
+        # a quieter console; `--explain` puts it back for debugging.
+        self.include_reasoning = include_reasoning
         self._mss = None
         self._gui = None
 
@@ -276,8 +296,10 @@ class LocalDriver:
                     session_id,
                     screenshot=base64.b64encode(png).decode("ascii"),
                     instruction=instruction,
+                    include_reasoning=self.include_reasoning,
                 )
                 prediction: Prediction = parse_prediction(raw)
+                step.raw = raw if isinstance(raw, dict) else None
                 step.actions = prediction.actions
                 step.reasoning = prediction.reasoning
                 step.credits = prediction.credits
