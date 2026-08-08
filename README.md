@@ -102,6 +102,25 @@ independently.
 
 ## Run it
 
+### Requirements
+
+| | |
+|---|---|
+| Python | 3.10 or newer (developed on 3.14) |
+| OS | Windows for the live driver; the offline parts run anywhere |
+| Coasty key | only for `run --live` — [coasty.ai/developers/keys](https://coasty.ai/developers/keys) |
+| Browser | Chrome or Edge, found automatically |
+
+The offline commands need **nothing installed** — no `pip install`, no key, no
+network. Only the live driver needs the two optional packages.
+
+```bash
+git clone https://github.com/shlok-temp/dolidesk-coasty
+cd dolidesk-coasty
+python -m unittest discover -s tests    # 116 tests, offline
+python -m ap_desk rehearse --demo       # the whole pipeline, $0
+```
+
 ### Offline — no key, no cost, no network
 
 ```bash
@@ -142,15 +161,27 @@ python -m pip install mss pyautogui
 export COASTY_API_KEY=sk-coasty-live-...     # coasty.ai/developers/keys
 export COASTY_BASE_URL=https://coasty.ai/v1
 export COASTY_ALLOW_LIVE=1
-
-python -m ap_desk doctor                      # preflight
-python -m ap_desk run --dry-run               # predict, perform nothing
-python -m ap_desk run --live --demo --kiosk   # the recording run
-python -m ap_desk run --live                  # the full 12-invoice queue
 ```
 
-`run` launches Chrome maximised on the portal, brings it genuinely to the front,
-then moves your real mouse and types real keys. Watch it happen; record it with
+On Windows PowerShell:
+
+```powershell
+$env:COASTY_API_KEY    = "sk-coasty-live-..."
+$env:COASTY_BASE_URL   = "https://coasty.ai/v1"
+$env:COASTY_ALLOW_LIVE = "1"
+```
+
+Then:
+
+```bash
+python -m ap_desk doctor                      # preflight: deps, key, target
+python -m ap_desk estimate --demo             # what it will cost
+python -m ap_desk run --dry-run               # predict, perform nothing
+python -m ap_desk run --live --demo --kiosk   # the recording run
+```
+
+`run` launches Chrome on the portal in app mode, brings it genuinely to the
+front, then moves your real mouse and clicks. Watch it happen; record it with
 OBS. The portal stays on `localhost` — nothing is exposed to the internet.
 
 **Two kill switches:** slam the pointer into any screen corner (PyAutoGUI's
@@ -159,15 +190,58 @@ failsafe), or delete `out/RUNNING`.
 Start with `--dry-run`. It captures and predicts but performs nothing, so you can
 read the action stream before anything touches your desktop.
 
+### Commands
+
+| Command | What it does |
+|---|---|
+| `rehearse` | the whole pipeline offline, no model, no key, $0 |
+| `run` | the agent drives this desktop against a Coasty session |
+| `portal` | serve the terminal only, to click through yourself |
+| `doctor` | preflight: Python, driver deps, key kind, target |
+| `estimate` | what a live run would cost before anything runs |
+
+### Flags for `run`
+
 | Flag | Effect |
 |---|---|
+| `--live` | use the real Coasty API (otherwise nothing is spent) |
 | `--demo` | the 5-invoice queue, sized to finish inside a short recording |
 | `--kiosk` | app-mode window with no browser chrome — records better |
 | `--with-tax` | also require the VAT check on approved invoices |
 | `--with-summary` | also require a written summary per invoice |
+| `--dry-run` | predict every step but perform nothing |
 | `--steps N` | lower the step cap for a quick sanity pass |
+| `--port N` | serve the portal on another port |
 | `--keep-browser` | leave the browser open afterwards to inspect the queue |
 | `--no-browser` | drive whatever window is already in front |
+| `--quiet` | do not request the model's reasoning |
+
+`--demo`, `--with-tax` and `--with-summary` work on `rehearse` too, so any
+combination can be checked offline before it is run live.
+
+### What a run leaves behind
+
+| File | Contents |
+|---|---|
+| `out/report.json` | per-invoice scoring: expected, actual, and why |
+| `out/evidence.json` | the hash-chained ledger of frames and decisions |
+| `out/frames/` | every frame the model saw, oldest first |
+
+`out/` is git-ignored. `out/frames/` holds screenshots of whatever desktop the
+agent was driving, so it is deliberately never committed.
+
+### If something goes wrong
+
+| Symptom | Cause |
+|---|---|
+| `Refusing to call https://coasty.ai/v1` | `COASTY_ALLOW_LIVE=1` not set |
+| `403` with a Cloudflare 1010 body | a proxy is rewriting the User-Agent |
+| `SESSION_NOT_FOUND` | the session dropped; the driver reopens one and continues |
+| `no window matching the page title` | something else already holds the port — try `--port 8905` |
+| The agent describes the wrong screen | the portal window is not in front |
+| Nothing records | use `--kiosk`, which is app-mode rather than true fullscreen |
+
+Every error the client raises prints its own diagnosis and a `request_id`.
 
 ## Cost
 
