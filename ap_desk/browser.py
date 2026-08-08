@@ -316,6 +316,21 @@ def open_focused(
         return Launch(False, "no Chrome/Edge binary found; fell back to the default browser")
 
     profile = profile_dir or Path(__file__).resolve().parents[1] / "tmp" / "browser-profile"
+
+    # Start from a genuinely empty profile every run.
+    #
+    # Chrome persists a session in the user-data-dir, so a profile left over
+    # from a previous run restores that run's tabs -- which point at ports that
+    # are no longer listening, under titles from whatever the app was called
+    # then. The window that appears is therefore NOT the portal, the title match
+    # fails, and the launcher reports "no window matching the page title yet"
+    # while a stale page sits in front of the operator. Observed exactly that.
+    #
+    # A stale profile also makes Chrome hand the URL to an already-running
+    # instance holding the same directory instead of starting its own, which is
+    # the behaviour the separate profile existed to avoid in the first place.
+    if profile.exists():
+        shutil.rmtree(profile, ignore_errors=True)
     profile.mkdir(parents=True, exist_ok=True)
 
     args = [
@@ -331,11 +346,13 @@ def open_focused(
         "--disable-session-crashed-bubble",
         "--disable-infobars",
         "--hide-crash-restore-bubble",
+        # Belt and braces against session restore: even on a fresh directory,
+        # a crashed previous run can leave Chrome offering to restore.
+        "--disable-features=ChromeWhatsNewUI,ProfilePicker,SigninInterceptBubble,InfiniteSessionRestore",
+        "--disable-restore-session-state",
         # Keep the window predictable for the agent and for a recording.
         "--window-position=0,0",
         "--start-maximized",
-        # A profile-picker or sign-in prompt would sit on top of the page.
-        "--disable-features=ChromeWhatsNewUI,ProfilePicker,SigninInterceptBubble",
     ]
     if kiosk:
         args.append("--kiosk")
