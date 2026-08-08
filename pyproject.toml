@@ -1,0 +1,33 @@
+[project]
+name = "coasty-ap-exception-desk"
+version = "0.1.0"
+description = "An autonomous accounts-payable exception desk. An AI agent works a real ERP's purchase-to-pay queue from pixels alone, and every decision it makes is proved against an independent oracle."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+# The core is deliberately stdlib-only: urllib, hashlib, json and unittest
+# cover the API client, the oracle, the evidence ledger and the whole test
+# suite. That means the testcase and the verifier run on a bare interpreter
+# with nothing installed, which is the property that makes this reproducible
+# by someone who just cloned it.
+dependencies = []
+
+[project.optional-dependencies]
+# Screen capture and input synthesis are the ONLY things the stdlib cannot do.
+# They are confined to the external-machine driver so that nothing else in the
+# project inherits an install step.
+driver = [
+  "mss>=9.0.1",
+  "pyautogui>=0.9.54",
+]
+
+[project.scripts]
+ap-desk = "ap_desk.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ap_desk*"]
