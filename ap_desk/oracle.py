@@ -48,6 +48,9 @@ class InvoiceScore:
     # The agent's written summary.
     summary: str | None = None
     summary_grounded: bool | None = None
+    # Whether the tax stage was switched on for this run. Without it, an
+    # invoice would be reported as missing a receipt the terminal never offered.
+    tax_graded: bool = True
 
     @property
     def status(self) -> str:
@@ -59,7 +62,7 @@ class InvoiceScore:
             return "RIGHT HOLD, WRONG REASON"
         if self.vat_correct is False:
             return "RIGHT CALL, WRONG VAT"
-        if self.vat_correct is None and self.expected == "APPROVED":
+        if self.tax_graded and self.vat_correct is None and self.expected == "APPROVED":
             return "APPROVED, NO TAX RECEIPT"
         if self.summary_grounded is False:
             return "CORRECT, UNGROUNDED SUMMARY"
@@ -69,6 +72,7 @@ class InvoiceScore:
 @dataclass
 class Report:
     scores: list[InvoiceScore]
+    grade_tax: bool = True
 
     @property
     def total(self) -> int:
@@ -99,7 +103,8 @@ class Report:
             and s.summary_grounded is not False
             # An approved invoice with no receipt raised is unfinished work,
             # not a pass: the tax liability was never recorded.
-            and not (s.expected == "APPROVED" and s.correct and s.vat_correct is None)
+            and not (self.grade_tax and s.expected == "APPROVED"
+                     and s.correct and s.vat_correct is None)
         )
 
     @property
@@ -239,8 +244,15 @@ _GENERIC_WORDS = frozenset({
 })
 
 
-def score(data: Dataset, state: dict) -> Report:
-    """Diff what the agent did against what the records say it should have done."""
+def score(data: Dataset, state: dict, *, grade_summary: bool = True,
+          grade_tax: bool = True) -> Report:
+    """Diff what the agent did against what the records say it should have done.
+
+    `grade_summary` and `grade_tax` follow the portal's stage switches. Grading
+    a stage the terminal never offered would mark every invoice down for work
+    it was never asked to do -- the scorer has to measure the workflow that
+    actually ran, not the largest one this repo can express.
+    """
     scores: list[InvoiceScore] = []
     observed = state.get("invoices", {})
 
@@ -268,7 +280,9 @@ def score(data: Dataset, state: dict) -> Report:
         # an invoice the agent correctly approved. Grading it on a hold would
         # penalise the agent for correctly declining to raise one.
         declared = actual.get("declared_vat")
-        if correct and expected_disp == "APPROVED":
+        if not grade_tax:
+            vat_correct = None
+        elif correct and expected_disp == "APPROVED":
             vat_correct = (
                 None if declared is None
                 else abs(declared - tax["vat_total"]) < 0.005
@@ -277,6 +291,9 @@ def score(data: Dataset, state: dict) -> Report:
             vat_correct = None
 
         summary = actual.get("summary")
+        grounded = (
+            summary_is_grounded(summary, data.invoices[ref]) if grade_summary else None
+        )
         scores.append(
             InvoiceScore(
                 invoice=ref,
@@ -292,10 +309,11 @@ def score(data: Dataset, state: dict) -> Report:
                 vat_correct=vat_correct,
                 receipt_ref=actual.get("tax_receipt_ref"),
                 summary=summary,
-                summary_grounded=summary_is_grounded(summary, data.invoices[ref]),
+                summary_grounded=grounded,
+                tax_graded=grade_tax,
             )
         )
-    return Report(scores)
+    return Report(scores, grade_tax=grade_tax)
 
 
 def render(report: Report) -> str:

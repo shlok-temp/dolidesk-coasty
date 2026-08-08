@@ -59,38 +59,71 @@ DEMO_LIMIT = 5
 DEMO_EXPECTED_STEPS = 42
 DEMO_MAX_STEPS = 60
 
-TASK = (
+TASK_HEAD = (
     "You are an accounts-payable clerk using the DoliDesk terminal at {url}.\n\n"
     "Act on every turn. Do not narrate - emit the action.\n\n"
     "Sign on, then open INVOICE MATCH WORKLIST. Work the invoices strictly top to "
     "bottom. Finish one completely before opening the next, and never reopen an "
     "invoice you have already actioned.\n\n"
-    "Each invoice screen shows a NEXT: line telling you which of its three steps is "
-    "outstanding. Follow it.\n\n"
-    "1. SUMMARY. Click the summary text box and type ONE short sentence naming the "
-    "vendor and the main item, about 12 words, then click SAVE SUMMARY.\n"
-    "2. DISPOSITION. Open the PURCHASE ORDER and GOODS RECEIPT links to read their "
+    "Each invoice screen shows a NEXT: line telling you what is outstanding.\n\n"
+)
+
+TASK_SUMMARY = (
+    "SUMMARY. Click the summary text box and type ONE short sentence naming the "
+    "vendor and the main item, about 12 words, then click SAVE SUMMARY.\n\n"
+)
+
+TASK_DISPOSITION = (
+    "DISPOSITION. Open the PURCHASE ORDER and GOODS RECEIPT links to read their "
     "quantities and prices. Every line must be billed at the purchase order's price, "
     "within 2 percent or 0.50, and for no more than the quantity on the goods "
     "receipt. If all lines pass, click APPROVE FOR PAYMENT. Otherwise pick the reason "
     "in the dropdown and click PLACE ON HOLD: PRICE_OVER_PO when billed above the "
     "order, PRICE_UNDER_PO when billed below it, QTY_OVER_RECEIPT when billed for "
-    "more than was received.\n"
-    "3. TAX RECEIPT. Only on an approved invoice. Add up the net amounts for each tax "
+    "more than was received.\n\n"
+)
+
+TASK_TAX = (
+    "TAX RECEIPT. Only on an approved invoice. Add up the net amounts for each tax "
     "code separately, apply that code's percentage to its own subtotal, add the "
     "results, type that number in the VAT DUE box and click RAISE TAX RECEIPT. Ignore "
     "the vendor's printed VAT figure - it is sometimes wrong.\n\n"
+)
+
+TASK_TAIL = (
     "Then click MATCH WORKLIST and open the next invoice. When every invoice shows "
     "APPROVED or ON HOLD, report how many you approved and how many you held."
 )
+
+
+def build_task(url: str, *, with_summary: bool, with_tax: bool) -> str:
+    """Assemble the prompt from the stages that are switched on.
+
+    Describing a step the terminal is not showing is worse than useless: the
+    agent hunts for a control that is not there and spends its budget doing it.
+    """
+    parts = [TASK_HEAD.format(url=url)]
+    if with_summary:
+        parts.append(TASK_SUMMARY)
+    parts.append(TASK_DISPOSITION)
+    if with_tax:
+        parts.append(TASK_TAX)
+    parts.append(TASK_TAIL)
+    return "".join(parts)
+
+
+# The full workflow, kept for the tests and for anyone reading the file.
+TASK = build_task("{url}", with_summary=True, with_tax=True)
 
 
 # --------------------------------------------------------------------------- #
 
 
 def _portal_in_background(port: int, seed: int | None = None,
-                          limit: int | None = None):
-    httpd = serve(port=port, seed=seed, limit=limit)
+                          limit: int | None = None, require_summary: bool = True,
+                          enable_tax: bool = True):
+    httpd = serve(port=port, seed=seed, limit=limit,
+                  require_summary=require_summary, enable_tax=enable_tax)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     return httpd
@@ -226,7 +259,8 @@ def cmd_doctor(args) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _scripted_walk(base: str, ledger: Ledger, limit: int | None = None) -> int:
+def _scripted_walk(base: str, ledger: Ledger, limit: int | None = None, *,
+                   with_summary: bool = True, with_tax: bool = True) -> int:
     """Work the queue by fetching pages directly. NOT an agent.
 
     Exists to exercise the portal, oracle, ledger and scoring without a model or
@@ -279,9 +313,10 @@ def _scripted_walk(base: str, ledger: Ledger, limit: int | None = None) -> int:
         truth = match_invoice(data, ref)
         tax = assess_tax(data, ref)
 
-        items = ", ".join(f"{l.qty:g} x {l.description}" for l in invoice.lines[:2])
-        post(f"/invoice/{ref}/summary",
-             summary=f"{invoice.vendor_name}: {items}. Net {invoice.total:.2f}.")
+        if with_summary:
+            items = ", ".join(f"{l.qty:g} x {l.description}" for l in invoice.lines[:2])
+            post(f"/invoice/{ref}/summary",
+                 summary=f"{invoice.vendor_name}: {items}. Net {invoice.total:.2f}.")
 
         disposition = truth["expected_disposition"]
         reason = truth["expected_reason"]
@@ -290,7 +325,7 @@ def _scripted_walk(base: str, ledger: Ledger, limit: int | None = None) -> int:
             fields["reason"] = reason
         post(f"/invoice/{ref}/dispose", **fields)
 
-        if disposition == "APPROVED":
+        if with_tax and disposition == "APPROVED":
             post(f"/invoice/{ref}/receipt", vat=f"{tax['vat_total']:.2f}")
 
         ledger.claim(f"{ref}.disposition", disposition, None)
@@ -304,7 +339,10 @@ def _scripted_walk(base: str, ledger: Ledger, limit: int | None = None) -> int:
 def cmd_rehearse(args) -> int:
     OUT.mkdir(exist_ok=True)
     limit = DEMO_LIMIT if args.demo else None
-    httpd = _portal_in_background(args.port, limit=limit)
+    with_summary = args.with_summary
+    with_tax = args.with_tax
+    httpd = _portal_in_background(args.port, limit=limit,
+                                  require_summary=with_summary, enable_tax=with_tax)
     base = f"http://127.0.0.1:{args.port}"
 
     print("\n  REHEARSAL - scripted walk, no model, no key, $0")
@@ -313,7 +351,8 @@ def cmd_rehearse(args) -> int:
     try:
         ledger = Ledger(run_id="rehearsal", task="scripted walk", target=base)
         t0 = time.time()
-        steps = _scripted_walk(base, ledger, limit)
+        steps = _scripted_walk(base, ledger, limit,
+                               with_summary=args.with_summary, with_tax=args.with_tax)
         elapsed = time.time() - t0
 
         data = build()
@@ -322,7 +361,8 @@ def cmd_rehearse(args) -> int:
             data.invoices = {r: data.invoices[r] for r in keep}
             data.links = {r: data.links[r] for r in keep}
         state = fetch_state(base)
-        report = score(data, state)
+        report = score(data, state, grade_summary=args.with_summary,
+                       grade_tax=args.with_tax)
 
         # The ledger has no frames in a rehearsal, so the chain is empty by
         # construction. Recording that honestly beats synthesising frames that
@@ -394,7 +434,10 @@ def cmd_run(args) -> int:
                   file=sys.stderr)
             return 2
 
-    httpd = _portal_in_background(args.port, limit=limit)
+    with_summary = args.with_summary
+    with_tax = args.with_tax
+    httpd = _portal_in_background(args.port, limit=limit,
+                                  require_summary=with_summary, enable_tax=with_tax)
     base = f"http://127.0.0.1:{args.port}"
     stop_file = OUT / "RUNNING"
     stop_file.write_text("delete this file to stop the run\n", encoding="utf-8")
@@ -428,7 +471,8 @@ def cmd_run(args) -> int:
             print("  ok, portal is in front now")
     print()
 
-    ledger = Ledger(run_id="pending", task=TASK.format(url=base), target=base)
+    task = build_task(base, with_summary=with_summary, with_tax=with_tax)
+    ledger = Ledger(run_id="pending", task=task, target=base)
     started = time.time()
 
     def on_step(step):
@@ -454,7 +498,7 @@ def cmd_run(args) -> int:
             on_step=on_step,
             include_reasoning=not args.quiet,
         )
-        result = driver.run(TASK.format(url=base))
+        result = driver.run(task)
         elapsed = time.time() - started
 
         frames_dir = OUT / "frames"
@@ -468,7 +512,7 @@ def cmd_run(args) -> int:
             keep = sorted(truth.invoices)[:limit]
             truth.invoices = {r: truth.invoices[r] for r in keep}
             truth.links = {r: truth.links[r] for r in keep}
-        report = score(truth, state)
+        report = score(truth, state, grade_summary=with_summary, grade_tax=with_tax)
 
         # Bind each disposition the portal actually recorded back to the frame
         # the agent was looking at when it acted. The portal logs the order of
@@ -565,6 +609,10 @@ def build_parser() -> "argparse.ArgumentParser":
     p.add_argument("--port", type=int, default=8900)
     p.add_argument("--demo", action="store_true",
                    help=f"the {DEMO_LIMIT}-invoice demo queue")
+    p.add_argument("--with-summary", action="store_true",
+                   help="also require a written summary per invoice")
+    p.add_argument("--with-tax", action="store_true",
+                   help="also require a VAT calculation and tax receipt")
     p.set_defaults(fn=cmd_rehearse)
 
     p = sub.add_parser("run", help="drive this desktop with a Coasty agent")
@@ -585,6 +633,10 @@ def build_parser() -> "argparse.ArgumentParser":
                    help=f"the {DEMO_LIMIT}-invoice demo queue, sized for a short recording")
     p.add_argument("--steps", type=int, default=None,
                    help=f"override the step cap (default {MAX_STEPS}, demo {DEMO_MAX_STEPS})")
+    p.add_argument("--with-summary", action="store_true",
+                   help="also require a written summary per invoice")
+    p.add_argument("--with-tax", action="store_true",
+                   help="also require a VAT calculation and tax receipt")
     p.add_argument("--settle", type=float, default=2.0)
     p.set_defaults(fn=cmd_run)
 

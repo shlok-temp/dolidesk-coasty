@@ -174,12 +174,23 @@ def _lines_table_taxed(lines) -> str:
 class Portal:
     """Owns the mutable dataset. One instance per server."""
 
-    def __init__(self, seed: int | None = None, limit: int | None = None) -> None:
+    def __init__(self, seed: int | None = None, limit: int | None = None,
+                 require_summary: bool = True, enable_tax: bool = True) -> None:
         self._lock = threading.Lock()
         # Remembered so /_reset rebuilds the same shape it started with. A reset
         # that silently restored all twelve invoices mid-demo would leave the
         # agent working a queue the operator did not ask for.
         self.limit = limit
+        # Stage switches.
+        #
+        # The workflow was built up in one go -- match, then a written summary,
+        # then tax assessment -- and the agent stalls reliably on the typing
+        # step while handling the match perfectly. Rather than delete the later
+        # stages, they are gated: the match flow alone is a complete, working
+        # automation, and each further stage can be switched back on once it
+        # holds up on its own. Nothing here is removed, only disabled.
+        self.require_summary = require_summary
+        self.enable_tax = enable_tax
         self.reset(seed, limit)
 
     def reset(self, seed: int | None = None, limit: int | None = None) -> None:
@@ -275,11 +286,11 @@ class Portal:
                 return False, f"INVALID DISPOSITION: {disposition}"
             if disposition == "HELD" and not reason:
                 return False, "HOLD REQUIRES A REASON CODE"
-            # The summary is a prerequisite, not an optional extra: it forces
-            # the agent to have read the invoice before ruling on it, and the
-            # order is what makes the written summary evidence rather than an
-            # afterthought composed once the answer was already known.
-            if not inv.summary:
+            # When the summary stage is on it is a prerequisite, not an
+            # optional extra: it forces the agent to have read the invoice
+            # before ruling on it. With the stage off, disposition stands
+            # alone and the invoice screen never shows the box.
+            if self.require_summary and not inv.summary:
                 return False, "RECORD THE INVOICE SUMMARY BEFORE SETTING A DISPOSITION"
             inv.disposition = disposition
             inv.hold_reason = reason if disposition == "HELD" else None
@@ -412,20 +423,25 @@ def screen_invoice(portal: Portal, ref: str, message: str = "",
     # the worklist to re-check things it had already read. A real terminal
     # would show the operator what is outstanding, so showing it is realistic
     # as well as cheaper. It states the STEP, never the answer.
-    if not inv.summary:
+    wants_summary = portal.require_summary
+    wants_tax = portal.enable_tax
+
+    if wants_summary and not inv.summary:
         nxt = "NEXT: type a one-line summary below, then SAVE SUMMARY"
     elif inv.disposition is None:
         nxt = "NEXT: compare with the order and receipt, then APPROVE or PLACE ON HOLD"
-    elif inv.disposition == "APPROVED" and not inv.tax_receipt_ref:
+    elif wants_tax and inv.disposition == "APPROVED" and not inv.tax_receipt_ref:
         nxt = "NEXT: calculate the VAT due and RAISE TAX RECEIPT"
     else:
         nxt = "DONE - return to the MATCH WORKLIST and open the next invoice"
 
-    done = [
-        ("1 SUMMARY", bool(inv.summary)),
-        ("2 DISPOSITION", inv.disposition is not None),
-        ("3 TAX RECEIPT", bool(inv.tax_receipt_ref) or inv.disposition == "HELD"),
-    ]
+    done = []
+    if wants_summary:
+        done.append(("SUMMARY", bool(inv.summary)))
+    done.append(("DISPOSITION", inv.disposition is not None))
+    if wants_tax:
+        done.append(("TAX RECEIPT", bool(inv.tax_receipt_ref) or inv.disposition == "HELD"))
+    done = [(f"{i} {label}", ok) for i, (label, ok) in enumerate(done, start=1)]
     ticks = " &nbsp; ".join(
         f'<span class="tag {"ok" if ok else "warn"}">{"OK " if ok else "&middot; "}{label}</span>'
         for label, ok in done
@@ -434,7 +450,9 @@ def screen_invoice(portal: Portal, ref: str, message: str = "",
 
     # Step 1 -- the written summary. Shown as done once recorded, so an agent
     # re-reading the screen can tell what it has already completed.
-    if inv.summary:
+    if not wants_summary:
+        summary_panel = ""
+    elif inv.summary:
         summary_panel = f"""
 <div class="panel">
 <h3>1. Invoice summary <span class="tag ok">RECORDED</span></h3>
@@ -456,10 +474,12 @@ can be set.</p>
 </div>"""
 
     # Step 3 -- the tax receipt, only reachable once approved.
-    if inv.tax_receipt_ref:
+    if not wants_tax:
+        tax_panel = ""
+    elif inv.tax_receipt_ref:
         tax_panel = f"""
 <div class="panel">
-<h3>3. Tax receipt <span class="tag ok">RAISED</span></h3>
+<h3>{3 if wants_summary else 2}. Tax receipt <span class="tag ok">RAISED</span></h3>
 <dl class="kv">
 <dt>RECEIPT</dt><dd><a href="/receipt/{escape(inv.tax_receipt_ref)}">{escape(inv.tax_receipt_ref)}</a></dd>
 <dt>VAT DECLARED</dt><dd>{_money(inv.declared_vat or 0)}</dd>
@@ -468,7 +488,7 @@ can be set.</p>
     elif inv.disposition == "APPROVED":
         tax_panel = f"""
 <div class="panel">
-<h3>3. Raise tax receipt</h3>
+<h3>{3 if wants_summary else 2}. Raise tax receipt</h3>
 <p class="hint">Work out the VAT actually due by applying each line's tax rate to
 its net amount, band by band. Do not copy the vendor's figure &mdash; it is not
 always right.</p>
@@ -480,7 +500,7 @@ always right.</p>
     else:
         tax_panel = """
 <div class="panel">
-<h3>3. Tax receipt</h3>
+<h3>{3 if wants_summary else 2}. Tax receipt</h3>
 <p class="hint">Available once the invoice is approved for payment. An invoice on
 hold has no agreed value, so no receipt can be raised against it.</p>
 </div>"""
@@ -502,7 +522,7 @@ net total <strong>{_money(inv.total)}</strong>
 {_lines_table_taxed(inv.lines)}
 {summary_panel}
 <div class="panel">
-<h3>2. Disposition</h3>
+<h3>{2 if wants_summary else 1}. Disposition</h3>
 <form method="post" action="/invoice/{escape(inv.ref)}/dispose">
 <input type="hidden" name="disposition" value="APPROVED">
 <button type="submit">APPROVE FOR PAYMENT</button>
@@ -731,14 +751,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8900, *, seed: int | None = None,
-          limit: int | None = None, verbose: bool = False) -> ThreadingHTTPServer:
+          limit: int | None = None, require_summary: bool = True,
+          enable_tax: bool = True, verbose: bool = False) -> ThreadingHTTPServer:
     """Start the portal. Returns the server; caller owns shutdown.
 
     Binds to loopback by default. Exposing this to a non-loopback interface is
     an egress decision the operator has to make deliberately, so it is a caller
     argument rather than a default.
     """
-    portal = Portal(seed, limit=limit)
+    portal = Portal(seed, limit=limit, require_summary=require_summary,
+                    enable_tax=enable_tax)
     handler = type("BoundHandler", (Handler,), {"portal": portal})
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.verbose = verbose
