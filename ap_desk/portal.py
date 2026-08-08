@@ -489,6 +489,17 @@ hold has no agreed value, so no receipt can be raised against it.</p>
 {banner}
 <h2>VENDOR INVOICE {escape(inv.ref)} &nbsp;<span class="tag {cls}">{escape(state)}</span></h2>
 {progress}
+<div class="panel">
+<strong>{escape(inv.vendor_name)}</strong> ({escape(inv.vendor_code)}) &nbsp;&middot;&nbsp;
+dated {escape(inv.doc_date)} &nbsp;&middot;&nbsp;
+net total <strong>{_money(inv.total)}</strong>
+{f' &nbsp;&middot;&nbsp; VAT claimed by vendor {_money(inv.claimed_vat)}' if inv.claimed_vat is not None else ''}
+{f'<br>HOLD REASON: {escape(inv.hold_reason)}' if inv.hold_reason else ''}
+<br><br>
+<a href="/po/{escape(link['po'])}">PURCHASE ORDER {escape(link['po'])}</a> &nbsp;&middot;&nbsp;
+<a href="/reception/{escape(link['reception'])}">GOODS RECEIPT {escape(link['reception'])}</a>
+</div>
+{_lines_table_taxed(inv.lines)}
 {summary_panel}
 <div class="panel">
 <h3>2. Disposition</h3>
@@ -502,21 +513,7 @@ hold has no agreed value, so no receipt can be raised against it.</p>
 <button type="submit" class="hold">PLACE ON HOLD</button>
 </form>
 </div>
-{tax_panel}
-<div class="panel">
-<strong>SUPPORTING DOCUMENTS</strong> &nbsp;
-<a href="/po/{escape(link['po'])}">PURCHASE ORDER {escape(link['po'])}</a> &nbsp;&middot;&nbsp;
-<a href="/reception/{escape(link['reception'])}">GOODS RECEIPT {escape(link['reception'])}</a>
-</div>
-<h3>Invoice lines</h3>
-{_lines_table_taxed(inv.lines)}
-<dl class="kv">
-<dt>VENDOR</dt><dd>{escape(inv.vendor_name)} ({escape(inv.vendor_code)})</dd>
-<dt>INVOICE DATE</dt><dd>{escape(inv.doc_date)}</dd>
-<dt>NET TOTAL</dt><dd>{_money(inv.total)}</dd>
-{claimed}
-{reason}
-</dl>"""
+{tax_panel}"""
     return _page(f"Invoice {ref}", body, CRUMB)
 
 

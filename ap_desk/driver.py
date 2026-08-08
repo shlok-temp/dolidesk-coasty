@@ -130,7 +130,7 @@ class LocalDriver:
         stop_file: Path | None = None,
         on_step: Callable[[Step], None] | None = None,
         settle_seconds: float = 0.7,
-        include_reasoning: bool = False,
+        include_reasoning: bool = True,
     ) -> None:
         self.client = client
         self.max_steps = max_steps
@@ -139,20 +139,12 @@ class LocalDriver:
         self.stop_file = stop_file
         self.on_step = on_step or (lambda _: None)
         self.settle_seconds = settle_seconds
-        # Reasoning OFF by default, which is not the obvious choice and is worth
-        # the explanation.
-        #
-        # A turn has a bounded output budget shared between the reasoning text
-        # and the actions. Asked to type a sentence into a form, the model
-        # narrates first -- prose plus a ```python agent.click(...)``` block --
-        # exhausts the budget mid-string, and emits NO valid action. Coasty
-        # then returns status `fail` and the run ends. Observed twice in live
-        # runs, both times at the exact step where it had to type a summary,
-        # with the reasoning truncated mid-word.
-        #
-        # Asking for shorter reasoning in the prompt did not fix it. Turning it
-        # off does, because the budget goes to the actions instead. The cost is
-        # a quieter console; `--explain` puts it back for debugging.
+        # Reasoning ON. Turning it off was tried and made things measurably
+        # worse -- the model stalled at step 4 instead of step 11, because a
+        # multi-step task needs somewhere to work out what it is doing. The
+        # truncation that ends a run in `fail` is not caused by reasoning
+        # existing; it is caused by the model having nothing useful on screen
+        # and narrating at length about it.
         self.include_reasoning = include_reasoning
         self._mss = None
         self._gui = None

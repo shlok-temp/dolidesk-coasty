@@ -452,7 +452,7 @@ def cmd_run(args) -> int:
             dry_run=args.dry_run,
             stop_file=stop_file,
             on_step=on_step,
-            include_reasoning=args.explain,
+            include_reasoning=not args.quiet,
         )
         result = driver.run(TASK.format(url=base))
         elapsed = time.time() - started
@@ -578,9 +578,9 @@ def build_parser() -> "argparse.ArgumentParser":
                    help="leave the browser open after the run, to inspect final state")
     p.add_argument("--kiosk", action="store_true",
                    help="fullscreen with no browser chrome; cleaner for recording")
-    p.add_argument("--explain", action="store_true",
-                   help="ask the model for reasoning too. Useful for debugging, but it "
-                        "spends output budget that the actions need and can stall a run")
+    p.add_argument("--quiet", action="store_true",
+                   help="do not request the model's reasoning. Cheaper per step, but it "
+                        "reasons worse on multi-step work")
     p.add_argument("--demo", action="store_true",
                    help=f"the {DEMO_LIMIT}-invoice demo queue, sized for a short recording")
     p.add_argument("--steps", type=int, default=None,
